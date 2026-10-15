@@ -1,0 +1,427 @@
+{% extends "base.html" %}
+{% block title %}Portfolio Optimizer | Confronto Modelli{% endblock %}
+{% block content %}
+
+{# ── funzione di formattazione (macro) ────────────────────────────────── #}
+{% macro fmt(label, val) %}
+    {%- if metric_format.get(label) == 'pct' -%}{{ "%.2f"|format(val * 100) }}%
+    {%- elif metric_format.get(label) == 'ratio' -%}{{ "%.2f"|format(val) }}
+    {%- else -%}{{ "%.2f"|format(val) }}{%- endif -%}
+{% endmacro %}
+
+{# Le colonne della tabella. Le etichette devono coincidere con quelle
+   prodotte da _METRIC_LABELS: la riga della curtosi restava vuota perche'
+   la tabella cercava "Kurtosis" mentre la metrica si chiama, dalla
+   convenzione C1, "Kurtosis in eccesso". #}
+{% set display_metrics = [
+    "Rendimento Ann.", "Volatilità Ann.", "Sharpe Ratio", "Sortino Ratio",
+    "Calmar Ratio", "Omega Ratio", "VaR 95%", "CVaR 95%", "Max Drawdown",
+    "Skewness", "Kurtosis in eccesso"
+] %}
+
+{# ── Intestazione ──────────────────────────────────────────────────── #}
+<div class="flex flex-wrap items-start justify-between gap-4">
+    <div>
+        <p class="text-sm uppercase tracking-[0.35em] text-amber-400">Confronto Modelli</p>
+        <h1 class="mt-2 text-4xl font-semibold">Tutti i criteri a confronto</h1>
+        <p class="mt-3 text-sm text-slate-400">
+            Storico: <span class="text-white font-medium">{{ lookback_years }}a</span> &nbsp;·&nbsp;
+            Orizzonte: <span class="text-white font-medium">{{ forecast_horizon_years or 1.0 }}a</span> &nbsp;·&nbsp;
+            Dati: <span class="font-mono text-slate-300">{{ start_date }} → {{ end_date }}</span> &nbsp;·&nbsp;
+            Peso max: <span class="text-white font-medium">{{ "%.0f%%"|format(max_weight * 100) }}</span> &nbsp;·&nbsp;
+            Asset: <span class="text-white font-medium">{{ tickers | join(', ') }}</span>
+        </p>
+        <p class="mt-1 text-xs text-slate-500">
+            Lo stesso tetto di concentrazione &egrave; applicato a tutti i criteri: con un tetto
+            diverso per criterio una differenza di risultato potrebbe venire dal vincolo anzich&eacute;
+            dal criterio.
+        </p>
+    </div>
+    <a href="{{ url_for('optimize.index') }}"
+       class="rounded-xl border border-slate-700 px-4 py-2.5 text-sm text-slate-200 hover:border-amber-400 transition">
+        Nuova analisi
+    </a>
+</div>
+
+{% if errors %}
+<div class="mt-4 rounded-xl border border-amber-700/40 bg-amber-950/20 px-4 py-3 text-sm text-amber-200 space-y-1">
+    {% for k, msg in errors.items() %}<div>{{ k }}: {{ msg }}</div>{% endfor %}
+</div>
+{% endif %}
+
+{# ── Raccomandazione ────────────────────────────────────────────────── #}
+{% if guidance %}
+{% set reco = guidance.for_criterion(guidance.recommended) %}
+<section class="mt-8 rounded-2xl border border-emerald-700 bg-emerald-950/20 p-5">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="max-w-3xl">
+            <p class="text-xs uppercase tracking-[0.3em] text-emerald-400">
+                Criterio raccomandato per questo universo
+            </p>
+            <p class="mt-2 text-sm text-slate-200">{{ guidance.headline }}</p>
+            {#
+               Il titolo e' costruito prima del backtest fuori campione e non
+               poteva contraddirlo: se il test trova un vincitore, la stessa
+               pagina affermava in alto che nessuno batte l'equipesato e in
+               basso che qualcuno lo batte.
+            #}
+            {% if oos and oos.available and oos.winners_over_benchmark %}
+            <p class="mt-2 rounded-xl border border-emerald-800/50 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-200">
+                Su <em>questo</em> universo il test fuori campione trova un&rsquo;eccezione:
+                {{ oos.rows | selectattr('model', 'in', oos.winners_over_benchmark) | map(attribute='label') | join(', ') }}
+                supera l&rsquo;equipesato con differenza significativa anche dopo la correzione
+                per i confronti multipli. La raccomandazione qui sopra riassume l&rsquo;indagine
+                su 56 configurazioni e quattro scenari, non questo singolo universo.
+            </p>
+            {% endif %}
+
+            {% if reco %}
+            <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                <div class="rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+                    <p class="text-xs uppercase tracking-wider text-emerald-400">Che cosa offre</p>
+                    <p class="mt-1 text-sm text-slate-300">{{ reco.delivers }}</p>
+                </div>
+                <div class="rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+                    <p class="text-xs uppercase tracking-wider text-rose-400">Che cosa non offre</p>
+                    <p class="mt-1 text-sm text-slate-300">{{ reco.does_not_deliver }}</p>
+                </div>
+            </div>
+            <p class="mt-3 text-sm text-slate-400"><span class="text-slate-300">Quando conviene:</span> {{ reco.when_preferable }}</p>
+            {% endif %}
+        </div>
+
+        {% if diagnosis %}
+        <div class="min-w-[16rem] rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+            <p class="text-xs uppercase tracking-wider text-slate-400">Diagnosi dell&rsquo;universo</p>
+            <ul class="mt-2 space-y-1 text-xs text-slate-400">
+                {% for line in diagnosis.describe() %}<li>{{ line }}</li>{% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+
+    {# Le schede degli altri criteri: che cosa comporta sceglierne uno diverso. #}
+    <details class="mt-4">
+        <summary class="cursor-pointer text-sm text-slate-400 hover:text-slate-200">
+            Che cosa garantisce ciascun altro criterio
+        </summary>
+        <div class="mt-3 grid gap-3 lg:grid-cols-2">
+            {% for a in guidance.assessments if a.criterion != guidance.recommended %}
+            <div class="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+                <p class="text-sm font-semibold" style="color: {{ compare_data | selectattr('key','equalto',a.criterion) | map(attribute='color') | first | default('#cbd5e1') }}">{{ a.label }}</p>
+                <p class="mt-1 text-xs text-emerald-300/80">Offre: {{ a.delivers }}</p>
+                <p class="mt-1 text-xs text-rose-300/80">Non offre: {{ a.does_not_deliver }}</p>
+                <p class="mt-1 text-xs text-slate-500">Conviene: {{ a.when_preferable }}</p>
+            </div>
+            {% endfor %}
+        </div>
+    </details>
+
+    <details class="mt-3">
+        <summary class="cursor-pointer text-sm text-slate-400 hover:text-slate-200">
+            Evidenza empirica e avvertenze
+        </summary>
+        <div class="mt-3 space-y-2 text-xs text-slate-400">
+            {% if reco %}{% for note in reco.notes %}<p>· {{ note }}</p>{% endfor %}{% endif %}
+            {% for caveat in guidance.caveats %}<p class="text-amber-300/80">· {{ caveat }}</p>{% endfor %}
+        </div>
+    </details>
+</section>
+{% endif %}
+
+{# ── Confronto fuori campione: la tabella che decide ─────────────────── #}
+{% if oos and oos.available %}
+<div class="mt-8">
+    <div class="flex flex-wrap items-baseline justify-between gap-3">
+        <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-300">
+            Fuori campione &mdash; valutazione walk-forward
+        </h2>
+        <p class="text-xs text-slate-500 font-mono">
+            stima {{ oos.train_days }}g · detenzione {{ oos.test_days }}g ·
+            costi {{ "%.1f"|format(oos.transaction_cost * 100) }}% ·
+            {{ oos.n_observations }} osservazioni · {{ oos.start }} → {{ oos.end }}
+        </p>
+    </div>
+    <p class="mt-2 max-w-4xl text-xs text-slate-500">
+        Ogni criterio stima su una finestra e detiene il periodo successivo, senza mai
+        vedere il periodo che poi lo giudica. &Egrave; questa la tabella su cui leggere il
+        confronto: le misure in campione, pi&ugrave; in basso, descrivono l&rsquo;allocazione
+        odierna sugli stessi dati che l&rsquo;hanno prodotta.
+    </p>
+
+    <div class="mt-3 overflow-x-auto rounded-2xl border border-slate-700 bg-slate-900/60">
+        <table class="min-w-full text-sm">
+            <thead class="bg-slate-950/70 text-xs uppercase tracking-wider text-slate-400">
+                <tr>
+                    <th class="px-3 py-2 text-left sticky left-0 bg-slate-950/70">Metrica</th>
+                    {% for d in oos_rows %}
+                    <th class="px-3 py-2 text-right whitespace-nowrap" style="color: {{ d.color }}">
+                        {{ d.label }}{% if d.is_benchmark %}<span class="ml-1 text-[10px] text-slate-500">rif.</span>{% endif %}
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+                {% for metric in display_metrics %}
+                {% set bw = oos_best_worst.get(metric, {}) %}
+                {% if bw or metric in ("Skewness", "Kurtosis in eccesso") %}
+                <tr class="hover:bg-slate-900/30">
+                    <td class="px-3 py-2 text-slate-300 sticky left-0 bg-slate-900/80">{{ metric }}</td>
+                    {% for d in oos_rows %}
+                    {% set val = d.metrics.get(metric) %}
+                    <td class="px-3 py-2 text-right font-mono text-xs
+                        {% if bw.get('best') == d.key %}text-emerald-300 font-semibold{% elif bw.get('worst') == d.key %}text-rose-400{% else %}text-slate-300{% endif %}">
+                        {% if val is not none and val == val %}
+                            {{ fmt(metric, val) }}
+                            {% if bw.get('best') == d.key %}<span class="ml-1 text-emerald-500 text-xs">▲</span>{% endif %}
+                        {% else %}—{% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endif %}
+                {% endfor %}
+
+                <tr class="border-t-2 border-slate-700 hover:bg-slate-900/30">
+                    <td class="px-3 py-2 text-slate-400 text-xs sticky left-0 bg-slate-900/80">Turnover medio per ribilanciamento</td>
+                    {% for d in oos_rows %}
+                    <td class="px-3 py-2 text-right font-mono text-xs text-slate-400">
+                        {% if d.ok %}{{ "%.1f%%"|format(d.turnover * 100) }}{% else %}—{% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                <tr class="hover:bg-slate-900/30">
+                    <td class="px-3 py-2 text-slate-400 text-xs sticky left-0 bg-slate-900/80">Costi di transazione cumulati</td>
+                    {% for d in oos_rows %}
+                    <td class="px-3 py-2 text-right font-mono text-xs text-slate-400">
+                        {% if d.ok %}{{ "%.2f%%"|format(d.cost * 100) }}{% else %}—{% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+
+                {# La riga per cui esiste tutta la pagina. #}
+                <tr class="border-t-2 border-amber-800/60 bg-slate-950/50">
+                    <td class="px-3 py-2 text-amber-300 text-xs sticky left-0 bg-slate-950/70">
+                        Differenza di Sharpe contro 1/N
+                    </td>
+                    {% for d in oos_rows %}
+                    <td class="px-3 py-2 text-right font-mono text-xs
+                        {% if d.significant %}text-emerald-300 font-semibold{% elif d.diff is not none and d.diff < 0 %}text-slate-400{% else %}text-slate-300{% endif %}">
+                        {% if d.is_benchmark %}<span class="text-slate-600">riferimento</span>
+                        {% elif d.diff is not none %}{{ "%+.3f"|format(d.diff) }}
+                        {% else %}—{% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                <tr class="bg-slate-950/50">
+                    <td class="px-3 py-2 text-amber-300 text-xs sticky left-0 bg-slate-950/70">
+                        p-value della differenza
+                        <span class="block text-[0.65rem] font-normal text-slate-500">questo confronto preso da solo</span>
+                    </td>
+                    {# Unilaterale, come il corretto sotto: accostare il p-value
+                       bilaterale di Ledoit-Wolf a quello corretto unilaterale
+                       farebbe sembrare che la correzione dimezzi i p-value
+                       invece di alzarli. #}
+                    {% for d in oos_rows %}
+                    <td class="px-3 py-2 text-right font-mono text-xs text-slate-500">
+                        {% if d.is_benchmark %}<span class="text-slate-600">—</span>
+                        {% elif d.p_value_onesided is not none %}{{ "%.3f"|format(d.p_value_onesided) }}
+                        {% elif d.p_value is not none %}{{ "%.3f"|format(d.p_value) }}
+                        {% else %}—{% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {#
+                   Il verde segue ora il p-value CORRETTO. Confrontare ogni
+                   criterio con l'equipesato e poi riportare il migliore e' una
+                   domanda sola posta cinque volte: misurato sulle serie fuori
+                   campione del progetto, sotto l'ipotesi che nessun criterio sia
+                   migliore, la probabilita' di trovarne almeno uno
+                   "significativo" al 5 per cento e' circa il 13 per cento.
+                #}
+                <tr class="border-t border-slate-800/60">
+                    <td class="px-3 py-2 text-amber-300 text-xs sticky left-0 bg-slate-950/70">
+                        p-value corretto
+                        <span class="block text-[0.65rem] font-normal text-slate-500">per i confronti multipli (Romano-Wolf)</span>
+                    </td>
+                    {% for d in oos_rows %}
+                    <td class="px-3 py-2 text-right font-mono text-xs
+                        {% if d.significant %}text-emerald-300 font-semibold{% else %}text-slate-500{% endif %}">
+                        {% if d.is_benchmark %}<span class="text-slate-600">—</span>
+                        {% elif d.coincides %}<span class="text-slate-600" title="Il percorso coincide con quello dell'equipesato: confrontarlo sarebbe confrontare una serie con se' stessa">non applicabile</span>
+                        {% elif not d.orderable %}<span class="text-amber-400/70" title="Eccesso di rendimento negativo: l'indice di Sharpe non e' ordinabile su questa finestra">non ordinabile</span>
+                        {% elif d.p_value_stepdown is not none %}{{ "%.3f"|format(d.p_value_stepdown) }}
+                        {% else %}<span class="text-slate-600" title="Correzione non calcolabile su questa finestra">n.d.</span>{% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="mt-3 rounded-xl border {{ 'border-emerald-800/50 bg-emerald-950/20' if oos.winners_over_benchmark else 'border-slate-800 bg-slate-900/40' }} px-4 py-3">
+        <p class="text-sm text-slate-300">{{ oos.verdict() }}</p>
+        <p class="mt-1 text-xs text-slate-500">
+            Test sulla differenza fra indici di Sharpe con stimatore robusto di Ledoit-Wolf
+            (2008), varianza di lungo periodo con kernel di Bartlett. Un p-value alto significa
+            che la differenza osservata &egrave; indistinguibile da zero, non che i due criteri
+            siano equivalenti: su {{ oos.n_observations }} osservazioni il test rileva solo
+            scarti ampi.
+        </p>
+    </div>
+
+    <p class="mt-3 text-xs text-slate-500 leading-relaxed">
+        <span class="text-slate-400">Perch&eacute; minima varianza, minimo CVaR e portafoglio tangente
+        possono coincidere.</span> Non &egrave; un errore della tabella. Lo stimatore di Bayes-Stein
+        contrae i rendimenti attesi verso il rendimento del portafoglio a minima varianza: quando i
+        titoli hanno storie simili la contrazione &egrave; quasi totale e il vettore diventa piatto,
+        cos&igrave; che massimizzare lo Sharpe equivale a minimizzare la varianza, perch&eacute; il
+        numeratore &egrave; lo stesso per ogni allocazione ammissibile. Inoltre, per distribuzioni
+        approssimativamente normali il minimo CVaR ha la stessa soluzione della minima varianza
+        (Rockafellar e Uryasev, 2000), e con pochi titoli il tetto di concentrazione satura
+        forzando tutti i criteri sugli stessi vertici. I tre criteri poggiano sul secondo momento:
+        dove il primo momento non discrimina, convergono.
+    </p>
+
+    {% set bl = oos_rows | selectattr('key', 'equalto', 'black_litterman') | first %}
+    {% set ew = oos_rows | selectattr('key', 'equalto', 'equal_weight') | first %}
+    {% if bl and ew and bl.ok and ew.ok and (bl.metrics.get('Sharpe Ratio', 0) - ew.metrics.get('Sharpe Ratio', 0)) | abs < 0.01 %}
+    <p class="mt-2 text-xs text-slate-500">
+        Black-Litterman coincide con l&rsquo;equipesato perch&eacute; nessuna view &egrave; stata
+        espressa: senza view il modello restituisce il portafoglio di equilibrio, che in assenza
+        di capitalizzazioni di mercato ha come prior l&rsquo;equipesato stesso. Non &egrave; una
+        duplicazione, &egrave; la definizione del metodo. Le view si esprimono nel modulo di
+        ottimizzazione singola.
+    </p>
+    {% endif %}
+</div>
+{% elif oos and oos.unavailable %}
+<div class="mt-8 rounded-2xl border border-amber-800/50 bg-amber-950/20 px-4 py-3">
+    <p class="text-sm text-amber-200">Confronto fuori campione non disponibile</p>
+    <p class="mt-1 text-xs text-amber-200/70">{{ oos.unavailable }}</p>
+</div>
+{% endif %}
+
+{# ── Grafici fuori campione ──────────────────────────────────────────── #}
+{% if charts.oos_equity %}
+<div class="mt-8 grid gap-6 lg:grid-cols-2">
+    <div class="rounded-3xl border border-slate-800 bg-slate-900/80 p-4">
+        {{ charts.oos_equity | safe }}
+    </div>
+    <div class="rounded-3xl border border-slate-800 bg-slate-900/80 p-4">
+        {{ charts.oos_drawdown | safe }}
+    </div>
+</div>
+{% endif %}
+
+{# ── Allocazione ─────────────────────────────────────────────────────── #}
+<div class="mt-6 rounded-3xl border border-slate-800 bg-slate-900/80 p-4">
+    {{ charts.compare_weights | safe }}
+</div>
+
+{# ── Metriche in campione: il contrasto ──────────────────────────────── #}
+<div class="mt-8">
+    <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-400">
+        In campione &mdash; allocazione odierna sugli stessi dati che l&rsquo;hanno prodotta
+    </h2>
+    <p class="mt-2 max-w-4xl text-xs text-slate-500">
+        Ogni criterio &egrave; ottimizzato sull&rsquo;intero storico e poi misurato sullo stesso
+        storico: ha visto i dati su cui viene giudicato. Il portafoglio tangente vince qui per
+        costruzione, perch&eacute; massimizza esattamente la grandezza su cui viene poi valutato.
+        Il confronto fra questa tabella e quella fuori campione &egrave; il risultato, non un
+        doppione: lo scarto fra le due misura quanto ciascun criterio si adatta al proprio
+        campione di stima.
+    </p>
+    <div class="mt-3 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/40">
+        <table class="min-w-full text-sm">
+            <thead class="bg-slate-950/70 text-xs uppercase tracking-wider text-slate-500">
+                <tr>
+                    <th class="px-3 py-2 text-left sticky left-0 bg-slate-950/70">Metrica</th>
+                    {% for d in compare_data %}
+                    <th class="px-3 py-2 text-right whitespace-nowrap" style="color: {{ d.color }}">{{ d.label }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+                {% for metric in display_metrics %}
+                <tr class="hover:bg-slate-900/30">
+                    <td class="px-3 py-2 text-slate-400 sticky left-0 bg-slate-900/60">{{ metric }}</td>
+                    {% for d in compare_data %}
+                    {% set val = d.metrics.get(metric) %}
+                    <td class="px-3 py-2 text-right font-mono text-xs text-slate-400">
+                        {% if val is not none and val == val %}{{ fmt(metric, val) }}{% else %}—{% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <p class="mt-2 text-xs text-slate-600">
+        Nessun valore &egrave; evidenziato in questa tabella: segnalare un vincitore su misure
+        in campione &egrave; l&rsquo;errore che il capitolo empirico documenta.
+    </p>
+</div>
+
+{# ── Pesi ─────────────────────────────────────────────────────────────── #}
+<div class="mt-8">
+    <h2 class="mb-3 text-sm font-semibold uppercase tracking-widest text-slate-400">Allocazione odierna (%)</h2>
+    <div class="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/60">
+        <table class="min-w-full text-sm">
+            <thead class="bg-slate-950/70 text-xs uppercase tracking-wider text-slate-400">
+                <tr>
+                    <th class="px-3 py-2 text-left sticky left-0 bg-slate-950/70">Asset</th>
+                    {% for d in compare_data %}
+                    <th class="px-3 py-2 text-right whitespace-nowrap" style="color: {{ d.color }}">{{ d.label }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+                {# L'unione dei titoli, non le chiavi del primo modello: un criterio che
+                   azzera un titolo non deve poter far sparire la riga per tutti. #}
+                {% set ns = namespace(all=[]) %}
+                {% for d in compare_data %}{% for t in d.weights.keys() %}
+                    {% if t not in ns.all %}{% set ns.all = ns.all + [t] %}{% endif %}
+                {% endfor %}{% endfor %}
+                {% for ticker in ns.all %}
+                <tr class="hover:bg-slate-900/30">
+                    <td class="px-3 py-2 font-mono text-amber-300 sticky left-0 bg-slate-900/80">{{ ticker }}</td>
+                    {% for d in compare_data %}
+                    {% set w = d.weights.get(ticker, 0) %}
+                    <td class="px-3 py-2 text-right font-mono text-xs
+                        {% if w >= 30 %}text-amber-300{% elif w >= 15 %}text-slate-200{% else %}text-slate-400{% endif %}">
+                        {{ "%.1f"|format(w) }}%
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+                <tr class="border-t-2 border-slate-700 bg-slate-950/40">
+                    <td class="px-3 py-2 text-xs text-slate-500 sticky left-0 bg-slate-950/40">HHI concentrazione</td>
+                    {% for d in compare_data %}
+                    <td class="px-3 py-2 text-right text-xs font-mono text-slate-400">
+                        {{ "%.3f"|format(d.hhi) }}
+                    </td>
+                    {% endfor %}
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <p class="mt-2 text-xs text-slate-600">HHI = indice di Herfindahl-Hirschman: 1/N puro = {{ "%.3f"|format(1.0 / (tickers | length)) }} · 1,0 = un solo titolo</p>
+</div>
+
+{# ── JS per il responsive ─────────────────────────────────────────────── #}
+<script>
+(function () {
+    var _t;
+    window.addEventListener('resize', function () {
+        clearTimeout(_t);
+        _t = setTimeout(function () {
+            if (typeof Plotly === 'undefined') return;
+            document.querySelectorAll('.plotly-graph-div').forEach(function (div) {
+                if (div.offsetParent !== null) Plotly.relayout(div, {autosize: true});
+            });
+        }, 120);
+    });
+})();
+</script>
+
+{% endblock %}

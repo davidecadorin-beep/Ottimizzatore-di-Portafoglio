@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Portfolio Optimizer | Conferma Ticker{% endblock %}
+{% block content %}
+
+<section class="max-w-2xl mx-auto space-y-8">
+
+    <div>
+        <p class="text-sm uppercase tracking-[0.35em] text-amber-400">Conferma ticker</p>
+        <h1 class="mt-3 text-3xl font-semibold leading-tight">Risoluzione simboli</h1>
+        <p class="mt-3 text-slate-400 text-sm">
+            Alcuni ticker sono stati trovati su più borse. Scegli quale versione usare.
+        </p>
+    </div>
+
+    <form method="post" action="{{ pending.target }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="_already_resolved" value="1">
+
+        {# Ripassa tutti i campi originali del form tranne tickers #}
+        {% for key, value in pending.form.items() %}
+            {% if key != "tickers" and key != "_already_resolved" %}
+                {% if value is iterable and value is not string %}
+                    {% for v in value %}
+                        <input type="hidden" name="{{ key }}" value="{{ v }}">
+                    {% endfor %}
+                {% else %}
+                    <input type="hidden" name="{{ key }}" value="{{ value }}">
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+
+        <div class="space-y-6">
+
+            {# Ticker gia' risolti — mostrati in sola lettura, passati come hidden #}
+            {% if pending.resolved or pending.warnings %}
+            <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5 space-y-3">
+                <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-400">
+                    Ticker risolti automaticamente
+                </h2>
+                {% for w in pending.warnings %}
+                <div class="flex items-center gap-2 text-sm text-slate-300">
+                    <span class="text-amber-400">→</span>
+                    <span>{{ w }}</span>
+                </div>
+                {% endfor %}
+                {% for sym in pending.resolved %}
+                    <input type="hidden" name="tickers_resolved" value="{{ sym }}">
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {# Ticker ambigui — un menu a tendina per ogni ticker #}
+            {% for amb in pending.ambiguous %}
+            <div class="rounded-xl border border-amber-500/30 bg-amber-950/20 p-5 space-y-3">
+                <h2 class="text-sm font-semibold text-amber-300">
+                    ⚠ <span class="font-mono">{{ amb.input }}</span> trovato su più borse — scegli:
+                </h2>
+                <select name="ambiguous_{{ loop.index0 }}"
+                        required
+                        class="w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-amber-200 focus:border-amber-400 focus:outline-none">
+                    {% for cand in amb.candidates %}
+                    <option value="{{ cand.symbol }}">
+                        {{ cand.symbol }} — {{ cand.exchange }}{% if cand.name != cand.symbol %} ({{ cand.name }}){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endfor %}
+
+            {# Conteggio totale dei gruppi ambigui — usato dal JS per raccogliere le scelte #}
+            <input type="hidden" name="ambiguous_count" value="{{ pending.ambiguous|length }}">
+
+        </div>
+
+        <div class="mt-8 flex gap-3">
+            <a href="/"
+               class="flex-1 rounded-xl border border-slate-700 px-5 py-3 text-center text-sm font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white">
+                ← Torna indietro
+            </a>
+            <button type="submit"
+                    class="flex-1 rounded-xl bg-amber-400 px-5 py-3 font-semibold text-slate-950 transition hover:bg-amber-300">
+                Conferma e ottimizza →
+            </button>
+        </div>
+
+    </form>
+</section>
+
+<script>
+// Collect all resolved + chosen ambiguous tickers into a single "tickers" field before submit
+document.querySelector('form').addEventListener('submit', function(e) {
+    const resolved = [...document.querySelectorAll('input[name="tickers_resolved"]')]
+        .map(i => i.value);
+    const ambiguousCount = document.querySelector('input[name="ambiguous_count"]');
+    const n = ambiguousCount ? parseInt(ambiguousCount.value) : 0;
+    const chosen = [];
+    for (let i = 0; i < n; i++) {
+        const select = document.querySelector(`select[name="ambiguous_${i}"]`);
+        if (select) chosen.push(select.value);
+    }
+    const all = [...resolved, ...chosen];
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'tickers';
+    input.value = all.join(', ');
+    this.appendChild(input);
+});
+</script>
+
+{% endblock %}

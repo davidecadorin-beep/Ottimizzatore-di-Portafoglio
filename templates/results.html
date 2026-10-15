@@ -1,0 +1,1017 @@
+{% extends "base.html" %}
+{% block title %}Portfolio Optimizer | Risultati{% endblock %}
+{% block content %}
+{% if ticker_warnings %}
+<div class="mb-6 rounded-xl border border-amber-500/30 bg-amber-950/20 px-5 py-3 text-sm text-amber-200">
+    <span class="font-semibold">Ticker risolti automaticamente:</span>
+    {{ ticker_warnings | join(", ") }}
+</div>
+{% endif %}
+<style>
+  .chart-card {
+    border: 1px solid {{ primary_color }}55;
+    background: #06091a;
+    box-shadow: 0 0 32px {{ primary_color }}18, inset 0 0 60px rgba(6,9,26,0.6);
+  }
+</style>
+
+<!-- ── Spiegazioni delle metriche (dati per il JS) ──────────────────── -->
+<script>
+const METRIC_EXPLANATIONS = {
+    "Rendimento Ann.":   "Tasso di crescita annuo composto (CAGR): il rendimento costante che, capitalizzato, avrebbe portato dal valore iniziale a quello finale. Non e\u0027 la media dei rendimenti giornalieri annualizzata, che su una serie volatile e\u0027 sistematicamente piu\u0027 alta perche\u0027 ignora l\u0027effetto della composizione sulle perdite.",
+    "Volatilità Ann.":   "Deviazione standard annualizzata dei rendimenti giornalieri (std × √252). Misura quanto oscilla il valore del portafoglio attorno alla media.",
+    "Sharpe Ratio":      "Rendimento in eccesso per unità di rischio: (Rend. − RF) / Volatilità. Valori > 1 sono considerati buoni; > 2 eccellenti.",
+    "Sortino Ratio":     "Come lo Sharpe, ma penalizza solo la volatilità negativa (downside deviation). Più rilevante per chi vuole protezione contro le perdite.",
+    "Calmar Ratio":      "Rendimento annuo diviso per il max drawdown assoluto. Misura quanto si guadagna rispetto alla perdita massima storica.",
+    "Omega Ratio":       "Rapporto fra i guadagni e le perdite misurati rispetto a una soglia. La soglia qui e\u0027 il tasso privo di rischio giornaliero composto, non lo zero: la vera alternativa a un investimento non e\u0027 tenere fermo il denaro ma il titolo privo di rischio, e usare lo zero farebbe apparire come guadagno anche un rendimento inferiore a quello. Valori > 1 indicano che i rendimenti superano l\u0027alternativa priva di rischio piu\u0027 di quanto le restino sotto.",
+    "VaR 95%":           "Value at Risk storico al 95%: la perdita massima giornaliera superata solo nel 5% dei casi storici. Es. 0.02 = perdi al massimo 2% in un giorno peggior-5%.",
+    "CVaR 95%":          "Conditional VaR (Expected Shortfall): la perdita media nel peggior 5% degli scenari. Sempre ≥ VaR. Misura il rischio di coda (tail risk).",
+    "Max Drawdown":      "La maggior perdita percentuale da un picco a un minimo successivo nell'intero periodo. Mostra il peggior momento per chi avesse comprato al massimo.",
+    "Skewness":          "Asimmetria della distribuzione dei rendimenti. Valori negativi (coda sinistra lunga) indicano rischio di perdite estreme; positivi il contrario.",
+    "Kurtosis in eccesso": "Curtosi in eccesso (convenzione di Fisher): nulla per una distribuzione normale, positiva quando le code sono piu' spesse. Un valore positivo indica outlier piu' frequenti di quanto la normale preveda, ed e' la ragione per cui il VaR calcolato su ipotesi normali sottostima la perdita.",
+    "VaR 95% (card)":    "Value at Risk storico al 95% di confidenza. Perdita giornaliera superata solo nel 5% dei casi storici.",
+    "CVaR 95% (card)":   "Expected Shortfall: perdita media nel peggior 5% degli scenari. Misura l'entità delle perdite in coda.",
+    "Max Drawdown (card)":"La maggior perdita da picco a minimo nell'intero periodo storico.",
+    "Skewness (card)":   "Asimmetria della distribuzione. Negativa = coda sinistra lunga = rischio di perdite estreme maggiore.",
+};
+
+const MC_EXPLANATIONS = {
+    "GBM (log-normale)":  "Moto browniano geometrico: assume rendimenti log-normali con deriva e volatilità costanti, stimate sulla storia del portafoglio. È il termine di paragone: ogni scostamento delle altre due curve misura quanto la distribuzione reale si allontani dalla log-normale.",
+    "Bootstrap a blocchi": "Estrae blocchi contigui di 21 giorni dalla storia effettiva del portafoglio, non rendimenti singoli: campionare blocchi conserva il raggruppamento della volatilità, cioè la tendenza dei giorni agitati a susseguirsi. Non allarga la banda — il raggruppamento è dipendenza nei quadrati e non nei livelli, quindi la dispersione della somma non ne risente — ma le lascia le code spesse che l'estrazione indipendente appiattirebbe. I blocchi sono circolari, così che ogni osservazione abbia lo stesso peso. Non assume alcuna distribuzione.",
+    "Jump-Diffusion":     "Diffusione con salti di Poisson. I salti sono individuati come movimenti oltre quattro deviazioni standard robuste, in entrambe le direzioni; la volatilità della componente diffusiva è misurata sui soli giorni che non sono salti, così che la varianza dei salti si aggiunga invece di essere contata due volte. Se la storia non contiene movimenti oltre la soglia il processo di salto resta inattivo e la curva coincide con quella del GBM: è la risposta corretta, non un guasto.",
+};
+
+function showModal(title, body) {
+    document.getElementById('info-modal-title').textContent = title;
+    document.getElementById('info-modal-body').textContent = body;
+    document.getElementById('info-modal').classList.remove('hidden');
+}
+function closeModal() {
+    document.getElementById('info-modal').classList.add('hidden');
+}
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeModal();
+});
+</script>
+
+<!-- ── Finestra modale info ──────────────────────────────────────────── -->
+<div id="info-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4"
+     onclick="if(event.target===this)closeModal()">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+    <div class="relative z-10 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+        <div class="flex items-start justify-between gap-3">
+            <h3 id="info-modal-title" class="text-base font-semibold text-amber-300"></h3>
+            <button onclick="closeModal()" class="text-slate-400 hover:text-white text-xl leading-none flex-shrink-0">✕</button>
+        </div>
+        <p id="info-modal-body" class="mt-3 text-sm text-slate-300 leading-relaxed"></p>
+    </div>
+</div>
+
+<!-- ── Intestazione ──────────────────────────────────────────────────── -->
+<div class="flex flex-wrap items-start justify-between gap-4">
+    <div>
+        <p class="text-sm uppercase tracking-[0.35em] text-amber-400">Risultati</p>
+        <h1 class="mt-2 text-4xl font-semibold">Portafoglio ottimizzato</h1>
+        <p class="mt-3 text-sm text-slate-400">
+            Criterio: <span class="text-white font-medium">{{ selected_model }}</span> &nbsp;·&nbsp;
+            Peso max: <span class="text-white font-medium">{{ "%.0f%%"|format((max_weight or 1) * 100) }}</span> &nbsp;·&nbsp;
+            Storico: <span class="text-white font-medium">{{ lookback_years }}a</span> &nbsp;·&nbsp;
+            Proiezione: <span class="text-white font-medium">{{ forecast_horizon_years }}a</span> &nbsp;·&nbsp;
+            Dati richiesti: <span class="font-mono text-slate-300">{{ start_date }} → {{ end_date }}</span>
+            {% if benchmark_name %}&nbsp;·&nbsp; Benchmark: <span class="text-red-400">{{ benchmark_name }}</span>{% endif %}
+        </p>
+        {% if effective_start %}
+        <p class="mt-1 text-sm {{ 'text-amber-300' if window_loss else 'text-slate-500' }}">
+            Finestra effettiva di stima:
+            <span class="font-mono">{{ effective_start }} → {{ effective_end }}</span>
+            ({{ effective_days }} giorni{% if requested_days %} su {{ requested_days }} richiesti{% endif %})
+        </p>
+        {% if window_loss %}
+        {#
+           dropna(how="any") rende rettangolare la matrice dei rendimenti: un
+           solo titolo con storia breve accorcia il campione di TUTTI gli altri,
+           e finora l'intestazione continuava a dichiarare l'orizzonte richiesto.
+        #}
+        <p class="mt-2 rounded-xl border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200 leading-relaxed">
+            <span class="font-semibold">Il campione e&rsquo; piu&rsquo; corto di quello richiesto ({{ "%.0f%%"|format(window_loss * 100) }} di giorni in meno).</span>
+            La matrice dei rendimenti tiene solo le date in cui <em>tutti</em> i titoli quotano,
+            quindi il titolo con la storia piu&rsquo; breve determina la finestra di tutti gli altri.
+            Covarianza, rendimenti attesi e ottimizzazione sono calcolati sulla finestra effettiva
+            indicata qui sopra, non su quella richiesta. Per usare l&rsquo;intero orizzonte,
+            togli dal portafoglio i titoli quotati da meno tempo.
+        </p>
+        {% endif %}
+        {% endif %}
+        {% if reference_currency %}
+        <span class="mt-2 inline-block rounded-full border border-cyan-400 bg-slate-900/80 px-4 py-1 text-sm font-semibold text-cyan-300"
+              title="Tutti i rendimenti e le metriche sono espressi in questa valuta">
+            Valuta di riferimento: {{ reference_currency }}
+        </span>
+        {% endif %}
+        {% if criterion_fallback %}
+        {# Il criterio scelto non era calcolabile e ne e' stato applicato un
+           altro. Prima accadeva con un solo avviso nei log, e la pagina
+           continuava a intitolarsi al criterio richiesto. #}
+        <p class="mt-2 rounded-xl border border-rose-800/60 bg-rose-950/30 px-3 py-2 text-xs text-rose-200 leading-relaxed">
+            <span class="font-semibold">Il criterio richiesto non e&rsquo; stato applicato.</span>
+            {{ criterion_fallback[1] }} L&rsquo;allocazione mostrata e&rsquo; quella di
+            <span class="font-semibold">{{ criterion_fallback[0] }}</span>, non quella richiesta:
+            i pesi e tutte le metriche qui sotto si riferiscono a quel criterio.
+        </p>
+        {% endif %}
+        {% if bl_views_used %}
+        <p class="mt-1 text-xs text-fuchsia-300">
+            View applicate:
+            {% for t, v in bl_views_used.items() %}<span class="font-mono">{{ t }}: {{ "%.1f"|format(v*100) }}%</span>{% if not loop.last %}, {% endif %}{% endfor %}
+        </p>
+        {% elif selected_model == 'black_litterman' %}
+        {# Senza view il posteriore coincide con il prior: il risultato e' il
+           portafoglio di equilibrio, non una stima di Black-Litterman. Dirlo e'
+           obbligatorio, perche' la pagina altrimenti attribuisce a un modello
+           un risultato che quel modello non ha prodotto. #}
+        <p class="mt-2 rounded-xl border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200 leading-relaxed">
+            <span class="font-semibold">Nessuna view inserita.</span>
+            Senza opinioni sui rendimenti attesi il posteriore di Black-Litterman coincide con il prior:
+            l&rsquo;allocazione qui sotto e&rsquo; il <span class="font-semibold">portafoglio di equilibrio</span>
+            implicito nei pesi di mercato, e il modello non aggiunge nulla a esso.
+            E&rsquo; un termine di paragone legittimo, ma per usare Black-Litterman
+            torna indietro e indica il rendimento annuo atteso sui titoli su cui hai un&rsquo;opinione.
+        </p>
+        {% endif %}
+        {% if bl_views_ignored %}
+        <p class="mt-2 rounded-xl border border-rose-800/60 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
+            <span class="font-semibold">View non applicate:</span>
+            {% for t, why in bl_views_ignored.items() %}<span class="font-mono">{{ t }}</span> &mdash; {{ why }}{% if not loop.last %}; {% endif %}{% endfor %}
+        </p>
+        {% endif %}
+        {% if bl_view_problems %}
+        <p class="mt-2 rounded-xl border border-rose-800/60 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
+            <span class="font-semibold">View non leggibili:</span> {{ bl_view_problems | join('; ') }}
+        </p>
+        {% endif %}
+        {% if bl_market_cap_failures %}
+        <p class="mt-2 rounded-xl border border-rose-800/60 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
+            <span class="font-semibold">Capitalizzazione di mercato non disponibile:</span>
+            {{ bl_market_cap_failures | join(', ') }} &mdash; esclusi dal prior di mercato di Black-Litterman.
+        </p>
+        {% endif %}
+        {% if bl_market_cap_excluded %}
+        <p class="mt-2 rounded-xl border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+            <span class="font-semibold">Titoli esclusi dal prior per capitalizzazione non valida:</span>
+            {{ bl_market_cap_excluded | join(', ') }}.
+        </p>
+        {% endif %}
+    </div>
+    <div class="flex gap-3 flex-shrink-0">
+        <form action="{{ url_for('export.export_csv') }}" method="post">
+            <input type="hidden" name="csrf_token"             value="{{ csrf_token() }}">
+            <input type="hidden" name="tickers"                value="{{ tickers | join(', ') }}">
+            <input type="hidden" name="lookback_years"         value="{{ lookback_years }}">
+            <input type="hidden" name="forecast_horizon_years" value="{{ forecast_horizon_years }}">
+            <input type="hidden" name="horizon_years"          value="{{ lookback_years }}">
+            <input type="hidden" name="max_weight"             value="{{ max_weight or '' }}">
+            <input type="hidden" name="benchmark"              value="{{ request.form.get('benchmark','^GSPC') }}">
+            <input type="hidden" name="optimization_model"     value="{{ request.form.get('optimization_model','') }}">
+            {# result_key e' calcolato sulla view RICHIESTA, non su quella
+               applicata: un criterio che ignora le view (es. equal_weight)
+               le mostra vuote in bl_views_used pur avendole result_key nel
+               proprio hash, e la percentuale a 4 decimali non e' comunque
+               invertibile bit a bit. bl_views_requested_json e' la stessa
+               struttura serializzata con json.dumps in optimize_bp, quindi
+               il round-trip e' esatto e la chiave ricalcolata dall'export
+               coincide sempre con questa. #}
+            <input type="hidden" name="bl_views_json"      value="{{ bl_views_requested_json }}">
+            {# run_backtest mancava: senza di esso l'export ricalcolava
+               sempre con il backtest spento, e la chiave divergeva ogni
+               volta che l'analisi mostrata lo aveva acceso. #}
+            <input type="hidden" name="run_backtest"       value="{{ '1' if run_backtest else '' }}">
+            {# Senza questi tre campi il CSV veniva ricalcolato con gli stimatori
+               predefiniti anziche' con quelli scelti, ed esportava un portafoglio
+               diverso da quello mostrato sopra. result_key permette di riusare
+               esattamente il risultato gia' calcolato, invece di rifarlo. #}
+            <input type="hidden" name="returns_method"     value="{{ request.form.get('returns_method','bayes_stein') }}">
+            <input type="hidden" name="cov_method"         value="{{ request.form.get('cov_method','ledoit_wolf') }}">
+            <input type="hidden" name="reference_currency" value="{{ request.form.get('reference_currency','auto') }}">
+            <input type="hidden" name="result_key"         value="{{ result_key }}">
+            <button type="submit"
+                    class="rounded-xl border border-amber-700 bg-amber-950/40 px-4 py-2.5 text-sm text-amber-300 hover:border-amber-400 hover:text-white transition">
+                Esporta CSV
+            </button>
+        </form>
+        <form action="{{ url_for('compare.compare_models') }}" method="post">
+            <input type="hidden" name="csrf_token"             value="{{ csrf_token() }}">
+            <input type="hidden" name="tickers"                value="{{ tickers | join(', ') }}">
+            <input type="hidden" name="lookback_years"         value="{{ lookback_years }}">
+            <input type="hidden" name="forecast_horizon_years" value="{{ forecast_horizon_years }}">
+            <input type="hidden" name="horizon_years"          value="{{ lookback_years }}">
+            <input type="hidden" name="max_weight"             value="{{ max_weight or '' }}">
+            <input type="hidden" name="benchmark"              value="{{ request.form.get('benchmark','') }}">
+            <input type="hidden" name="reference_currency"     value="{{ request.form.get('reference_currency','auto') }}">
+            <input type="hidden" name="returns_method"         value="{{ request.form.get('returns_method','bayes_stein') }}">
+            <input type="hidden" name="cov_method"             value="{{ request.form.get('cov_method','ledoit_wolf') }}">
+            <button type="submit"
+                    class="rounded-xl border border-violet-700 bg-violet-950/30 px-4 py-2.5 text-sm text-violet-300 hover:border-violet-400 hover:text-white transition whitespace-nowrap">
+                Confronta modelli
+            </button>
+        </form>
+        <a href="{{ url_for('optimize.index') }}"
+           class="rounded-xl border border-slate-700 px-4 py-2.5 text-sm text-slate-200 hover:border-amber-400 hover:text-white transition">
+            Nuova analisi
+        </a>
+        <a href="{{ url_for('secondary.news') }}?tickers={{ tickers | join(',') }}"
+           class="rounded-xl border border-sky-700 bg-sky-950/30 px-4 py-2.5 text-sm text-sky-300 hover:border-sky-400 hover:text-white transition whitespace-nowrap">
+            News &amp; Eventi
+        </a>
+    </div>
+</div>
+
+{% if forecast_notes %}
+<section class="mt-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+    <p class="text-xs uppercase tracking-[0.3em] text-slate-400">Accuratezza delle previsioni</p>
+    <div class="mt-3 grid gap-3 sm:grid-cols-2">
+        {% for note in forecast_notes %}
+        <div class="rounded-xl border {{ 'border-slate-700' if note.reliable else 'border-amber-800' }} bg-slate-950/60 p-3">
+            <p class="text-sm text-slate-200">
+                {{ 'Volatilit\u00e0 attesa' if note.quantity == 'volatilita_attesa' else 'VaR 95%' }}:
+                <span class="font-mono">{{ "%.2f%%"|format(note.declared * 100) }}</span>
+                {% if note.corrected %}
+                <span class="text-amber-300">&rarr; corretta {{ "%.2f%%"|format(note.corrected * 100) }}</span>
+                {% endif %}
+            </p>
+            <p class="mt-1 text-xs text-slate-400">{{ note.note }}</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<!-- ── Navigazione a tab ────────────────────────────────────────────── -->
+<nav class="mt-8 flex gap-1 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/60 p-1">
+    {% set tabs = [
+        ('riepilogo',   'Riepilogo'),
+        ('allocazione', 'Allocazione'),
+        ('performance', 'Performance'),
+        ('rischio',     'Rischio'),
+        ('montecarlo',  'Monte Carlo'),
+        ('backtest',    'Backtest'),
+        ('stimatori',   'Stimatori'),
+    ] %}
+    {% for tid, tlabel in tabs %}
+    <button id="btn-{{ tid }}"
+            onclick="switchTab('{{ tid }}')"
+            class="tab-btn flex-shrink-0 rounded-xl px-5 py-2 text-sm font-medium text-slate-400 transition hover:text-slate-200
+                   {% if loop.first %}border border-amber-700 bg-amber-950/50 !text-amber-300{% endif %}">
+        {{ tlabel }}
+    </button>
+    {% endfor %}
+</nav>
+
+
+{# ────────────────────────────────────────────────────────────────────
+   MACRO: valore della metrica formattato
+   ──────────────────────────────────────────────────────────────────── #}
+{% macro fmt_metric(label, val) %}
+    {%- if metric_format.get(label) == 'pct' -%}
+        {{ "%.2f"|format(val * 100) }}%
+    {%- elif metric_format.get(label) == 'ratio' -%}
+        {{ "%.2f"|format(val) }}
+    {%- else -%}
+        {{ "%.2f"|format(val) }}
+    {%- endif -%}
+{% endmacro %}
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     TAB 1 — RIEPILOGO
+     ════════════════════════════════════════════════════════════════════ -->
+<div id="panel-riepilogo" class="tab-panel mt-6">
+
+    <!-- Confronto col benchmark -->
+    {% if benchmark_metrics %}
+    <div class="mb-6 overflow-x-auto rounded-2xl border border-slate-800 bg-slate-900/60">
+        <table class="min-w-full text-sm">
+            <thead class="bg-slate-950/70 text-xs uppercase tracking-wider text-slate-400">
+                <tr>
+                    <th class="px-4 py-3 text-left">Metrica</th>
+                    <th class="px-4 py-3 text-right text-amber-400">Portafoglio</th>
+                    <th class="px-4 py-3 text-right text-red-400">{{ benchmark_name }}</th>
+                    <th class="px-4 py-3 text-right text-slate-400">Delta</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+                {% set bench_key_map = {'Rendimento Ann.':'return_annual','Volatilità Ann.':'volatility_annual','Sharpe Ratio':'sharpe_ratio','Max Drawdown':'max_drawdown'} %}
+                {% for label, bkey in bench_key_map.items() %}
+                {% set pv  = metrics.get(label, None) %}
+                {% set bv  = benchmark_metrics.get(label, None) %}
+                <tr class="hover:bg-slate-900/30">
+                    <td class="px-4 py-2.5 text-slate-300">{{ label }}</td>
+                    <td class="px-4 py-2.5 text-right font-mono font-medium text-amber-300">
+                        {{ fmt_metric(label, pv) if pv is not none else "—" }}
+                    </td>
+                    <td class="px-4 py-2.5 text-right font-mono text-red-300">
+                        {{ fmt_metric(label, bv) if bv is not none else "—" }}
+                    </td>
+                    {#
+                       Il verde seguiva "pv > bv" per ogni metrica. Sulla
+                       volatilita' annua questo colorava di verde un portafoglio
+                       PIU' rischioso del benchmark — 25 per cento contro 15
+                       leggeva "+10,00%" in verde smeraldo. La direzione buona
+                       di ogni misura e' gia' definita una volta sola in
+                       risk/metrics.py (HIGHER_IS_BETTER), dove il drawdown vale
+                       True perche' e' memorizzato negativo. Si legge quella.
+                    #}
+                    {% set hib = higher_is_better.get(bkey, True) if higher_is_better else True %}
+                    {% set is_better = (pv > bv) if hib else (pv < bv) %}
+                    <td class="px-4 py-2.5 text-right font-mono
+                        {% if pv is not none and bv is not none %}{{ 'text-emerald-400' if is_better else 'text-rose-400' }}{% endif %}">
+                        {% if pv is not none and bv is not none %}
+                            {% if metric_format.get(label) == 'pct' %}{{ "%+.2f"|format((pv - bv)*100) }}%
+                            {% else %}{{ "%+.3f"|format(pv - bv) }}{% endif %}
+                        {% else %}—{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <!-- Metriche — raggruppate: rischio/rendimento | ratios | statistiche -->
+    {% set risk_keys    = ['Rendimento Ann.','Volatilità Ann.','VaR 95%','CVaR 95%','Max Drawdown'] %}
+    {% set ratio_keys   = ['Sharpe Ratio','Sortino Ratio','Calmar Ratio','Omega Ratio'] %}
+    {% set stat_keys    = ['Skewness','Kurtosis in eccesso'] %}
+
+    {% for group_label, group_keys, border_color in [
+        ('Rendimento & Rischio', risk_keys,  'border-amber-800/50'),
+        ('Ratio rischio-rendimento', ratio_keys, 'border-emerald-800/50'),
+        ('Statistiche distribuzione', stat_keys, 'border-slate-700'),
+    ] %}
+    {% set group_metrics = [] %}
+    {% for k in group_keys %}{% if metrics.get(k) is not none %}{% set _ = group_metrics.append((k, metrics[k])) %}{% endif %}{% endfor %}
+    {% if group_metrics %}
+    <div class="mb-4">
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">{{ group_label }}</h3>
+        <div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(155px, 1fr))">
+            {% for label, val in group_metrics %}
+            <button onclick="showModal('{{ label }}', METRIC_EXPLANATIONS['{{ label }}'] || '{{ label }}')"
+                    class="rounded-2xl border {{ border_color }} bg-slate-900/60 p-4 text-left hover:border-amber-600/50 transition group">
+                <div class="flex items-center justify-between gap-1">
+                    <div class="text-xs text-slate-400 leading-tight group-hover:text-slate-300">{{ label }}</div>
+                    <div class="text-slate-600 group-hover:text-slate-400 text-xs">?</div>
+                </div>
+                <div class="mt-1.5 text-xl font-semibold font-mono
+                    {% if label in ['Rendimento Ann.'] %}text-amber-300
+                    {% elif label in ['Volatilità Ann.','VaR 95%','CVaR 95%','Max Drawdown'] %}text-amber-300
+                    {% elif label in ['Sharpe Ratio','Sortino Ratio','Calmar Ratio','Omega Ratio'] %}text-emerald-400
+                    {% else %}text-white{% endif %}">
+                    {{ fmt_metric(label, val) }}
+                </div>
+            </button>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+
+    <!-- Riga del tasso risk-free -->
+    <div class="mt-4">
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Tasso Risk-Free</h3>
+        <p class="mb-2 text-xs text-slate-500">
+            Nella valuta di riferimento del portafoglio, con scadenza pari alla lunghezza
+            della finestra di dati. Non &egrave; una media fra valute: una volta convertiti
+            i rendimenti, l&rsquo;alternativa priva di rischio &egrave; quella della valuta in
+            cui si misura.
+        </p>
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {% for cur, rate in rf_breakdown.items() %}
+            <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+                <div class="text-xs text-slate-400">
+                    {% if cur == 'weighted' %}Tasso pesato portafoglio
+                    {% elif cur == 'USD' %}US Treasury
+                    {% elif cur == 'EUR' %}Bund ECB
+                    {% else %}{{ cur }}{% endif %}
+                </div>
+                <div class="mt-1 text-2xl font-semibold font-mono {% if cur == 'weighted' %}text-amber-300{% else %}text-slate-300{% endif %}">
+                    {{ "%.2f"|format(rate * 100) }}%
+                </div>
+                <div class="mt-0.5 text-xs text-slate-500">annualizzato</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     TAB 2 — ALLOCAZIONE
+     Priorità: pesi + simulatore affiancati | 2 torte | contributo rischio
+     ════════════════════════════════════════════════════════════════════ -->
+<div id="panel-allocazione" class="tab-panel mt-6 hidden">
+
+    <!-- Riga 1: tabella pesi + slider interattivi -->
+    <div class="grid gap-6 lg:grid-cols-2">
+
+        <!-- Tabella dei pesi -->
+        <div class="rounded-3xl chart-card p-6">
+            <h3 class="mb-4 text-base font-semibold">Pesi ottimali</h3>
+            <table class="min-w-full text-sm divide-y divide-slate-800">
+                <thead class="text-xs uppercase tracking-wider text-slate-400">
+                    <tr>
+                        <th class="pb-2 text-left">Ticker</th>
+                        <th class="pb-2 text-left">CCY</th>
+                        <th class="pb-2 text-right">Peso</th>
+                        <th class="pb-2 text-right">RC%</th>
+                        <th class="pb-2 pl-3">Alloc.</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800">
+                    {% for row in weights_table %}
+                    <tr class="hover:bg-slate-900/30">
+                        <td class="py-2.5 font-mono font-semibold text-amber-300">{{ row.ticker }}</td>
+                        <td class="py-2.5">
+                            <span class="rounded-full border border-slate-700 px-1.5 py-0.5 text-xs font-mono text-slate-400">{{ row.currency }}</span>
+                        </td>
+                        <td class="py-2.5 text-right font-mono">{{ row.weight }}%</td>
+                        <td class="py-2.5 text-right font-mono text-amber-300 text-xs">{{ row.rc }}%</td>
+                        <td class="py-2.5 pl-3">
+                            <div class="h-2 w-24 overflow-hidden rounded-full bg-slate-800">
+                                <div class="h-2 rounded-full bg-amber-400 transition-all" style="width:{{ [row.weight, 100]|min }}%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Slider interattivi -->
+        <div class="rounded-3xl chart-card p-6">
+            <h3 class="text-base font-semibold">Simulatore pesi interattivo</h3>
+            <p class="mt-1 text-xs text-slate-500 mb-5">Trascina gli slider. Metriche aggiornate in tempo reale. Pesi rinormalizzati a 100%.</p>
+            <div id="slider-container" class="space-y-3"></div>
+            <div class="mt-6 grid grid-cols-3 gap-3">
+                <div class="rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-center">
+                    <div class="text-xs text-slate-400">Rendimento</div>
+                    <div class="mt-0.5 text-lg font-mono font-semibold text-amber-300" id="live-ret">—</div>
+                </div>
+                <div class="rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-center">
+                    <div class="text-xs text-slate-400">Volatilità</div>
+                    <div class="mt-0.5 text-lg font-mono font-semibold text-amber-300" id="live-vol">—</div>
+                </div>
+                <div class="rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-center">
+                    <div class="text-xs text-slate-400">Sharpe</div>
+                    <div class="mt-0.5 text-lg font-mono font-semibold text-emerald-400" id="live-sharpe">—</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Riga 2: due torte (pie chart) -->
+    <div class="mt-6 grid gap-6 lg:grid-cols-2">
+        <div class="rounded-3xl chart-card p-4">
+            {{ charts.weights_pie | safe }}
+        </div>
+        <div class="rounded-3xl chart-card p-4">
+            {{ charts.currency | safe }}
+        </div>
+    </div>
+
+    <!-- Riga 3: contributo al rischio — da sola → centrata -->
+    <div class="mt-6 flex justify-center">
+        <div class="w-full max-w-[880px] rounded-3xl chart-card p-4">
+            {{ charts.risk_contribution | safe }}
+        </div>
+    </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     TAB 3 — PERFORMANCE
+     Equity + drawdown (2 col) | rolling Sharpe full width
+     ════════════════════════════════════════════════════════════════════ -->
+<div id="panel-performance" class="tab-panel mt-6 hidden">
+    <div class="grid gap-6 lg:grid-cols-2">
+        <div class="rounded-3xl chart-card p-4">
+            {{ charts.equity | safe }}
+        </div>
+        <div class="rounded-3xl chart-card p-4">
+            {{ charts.drawdown | safe }}
+        </div>
+    </div>
+    <!-- Sharpe mobile: larghezza piena — da sola → centrata -->
+    <div class="mt-6 flex justify-center">
+        <div class="w-full max-w-[880px] rounded-3xl chart-card p-4">
+            {{ charts.rolling_sharpe | safe }}
+        </div>
+    </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     TAB 4 — RISCHIO
+     Frontier | VaR cards con click-spiegazione | Stress test
+     ════════════════════════════════════════════════════════════════════ -->
+<div id="panel-rischio" class="tab-panel mt-6 hidden">
+
+    <!-- Frontiera efficiente: da sola → centrata -->
+    <div class="flex justify-center">
+        <div class="w-full max-w-[880px] rounded-3xl chart-card p-4">
+            {{ charts.frontier | safe }}
+        </div>
+    </div>
+
+    <!-- Card VaR / CVaR / Drawdown con spiegazione al click -->
+    <div class="mt-6">
+        <h3 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
+            Metriche di coda &amp; rischio
+            <span class="ml-2 text-slate-600 font-normal normal-case">(click su ogni riquadro per spiegazione)</span>
+        </h3>
+        <div class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))">
+            {% for label, expl_key in [
+                ('VaR 95%',    'VaR 95%'),
+                ('CVaR 95%',   'CVaR 95%'),
+                ('Max Drawdown','Max Drawdown'),
+                ('Skewness',   'Skewness'),
+                ('Kurtosis in eccesso', 'Kurtosis in eccesso'),
+            ] %}
+            {% set val = metrics.get(label, None) %}
+            <button onclick="showModal('{{ label }}', METRIC_EXPLANATIONS['{{ expl_key }}'] || '')"
+                    class="rounded-2xl border border-amber-800/40 bg-amber-950/20 p-4 text-left hover:border-amber-600/60 transition group">
+                <div class="flex justify-between">
+                    <div class="text-xs text-amber-400">{{ label }}</div>
+                    <div class="text-amber-700 group-hover:text-amber-500 text-xs">?</div>
+                </div>
+                <div class="mt-1.5 text-xl font-mono font-semibold text-amber-300">
+                    {{ fmt_metric(label, val) if val is not none else "—" }}
+                </div>
+            </button>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Stress test: larghezza piena -->
+    <div class="mt-6 rounded-3xl chart-card p-4">
+        {{ charts.stress | safe }}
+    </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     TAB 5 — MONTE CARLO
+     Chart centrato e grande | card di riepilogo con click-spiegazione
+     ════════════════════════════════════════════════════════════════════ -->
+<div id="panel-montecarlo" class="tab-panel mt-6 hidden">
+
+    {% if mc_summary %}
+    <div>
+        <p class="mb-3 text-xs text-slate-500 text-center">
+            Click su ogni riquadro per dettagli sul modello di simulazione.
+        </p>
+        <div class="grid gap-4 lg:grid-cols-3">
+            {% for sim_key, sim_label, color_cls, expl_key in [
+                ('gbm_summary',        'GBM (log-normale)',    'cyan',   'GBM (log-normale)'),
+                ('bootstrap_summary',  'Bootstrap a blocchi',  'violet', 'Bootstrap a blocchi'),
+                ('jd_summary',         'Jump-Diffusion',       'amber',  'Jump-Diffusion'),
+            ] %}
+            {% set s = mc_summary.get(sim_key, {}) %}
+            {% if s %}
+            <button onclick="showModal('{{ sim_label }}', MC_EXPLANATIONS['{{ expl_key }}'] || '')"
+                    class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 text-left space-y-3 hover:border-slate-600 transition">
+                <div class="flex items-center justify-between">
+                    <div class="text-sm font-semibold
+                        {% if color_cls == 'cyan' %}text-amber-300
+                        {% elif color_cls == 'violet' %}text-violet-300
+                        {% else %}text-amber-300{% endif %}">
+                        {{ sim_label }}
+                    </div>
+                    <div class="text-slate-500 text-xs">click per info</div>
+                </div>
+                <div class="grid grid-cols-3 gap-2 text-center">
+                    {% for pkey, plabel in [('p5','P5'),('p50','P50'),('p95','P95')] %}
+                    <div>
+                        <div class="text-xs text-slate-500">{{ plabel }}</div>
+                        <div class="text-sm font-mono font-semibold text-white">{{ "%.0f"|format(s.get(pkey, 0)) }}</div>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-center border-t border-slate-800 pt-3">
+                    <div>
+                        <div class="text-xs text-slate-500">Prob. +50% entro {{ mc_summary.get('horizon_years', 1)|int }}a</div>
+                        <div class="text-sm font-mono font-semibold text-emerald-400">
+                            {{ "%.1f"|format(s.get('prob_target', 0) * 100) }}%
+                        </div>
+                    </div>
+                    <div>
+                        <div class="text-xs text-slate-500">Prob. −20% entro {{ mc_summary.get('horizon_years', 1)|int }}a</div>
+                        <div class="text-sm font-mono font-semibold text-rose-400">
+                            {{ "%.1f"|format(s.get('prob_loss_exceeds_threshold', 0) * 100) }}%
+                        </div>
+                    </div>
+                </div>
+            </button>
+            {% endif %}
+            {% endfor %}
+        </div>
+
+        <p class="mt-4 text-xs text-slate-600 text-center">
+            {{ mc_summary.get('n_sims', 1000)|int }} simulazioni ·
+            µ = {{ "%.1f"|format(mc_summary.get('mu_annual', 0) * 100) }}% ann. logaritmica
+            ({{ "%.1f"|format(mc_summary.get('mu_arithmetic', 0) * 100) }}% aritmetica) ·
+            σ = {{ "%.1f"|format(mc_summary.get('sigma_annual', 0) * 100) }}% ann. ·
+            Orizzonte {{ mc_summary.get('horizon_years', 1)|int }}a · Base 100
+        </p>
+        {% if mc_summary.get('jump_note') %}
+        <p class="mt-1 text-xs text-slate-600 text-center">Salti: {{ mc_summary.get('jump_note') }}</p>
+        {% endif %}
+        <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3 text-xs text-slate-500 space-y-1.5">
+            <p><span class="text-slate-400">Come leggere le bande.</span>
+            Le curve sono percentili calcolati istante per istante, non traiettorie:
+            nessuna simulazione ha percorso la curva P5, che unisce i quinti percentili
+            di date diverse e appartiene quindi a percorsi diversi.</p>
+            <p><span class="text-slate-400">Su che cosa e&rsquo; costruita.</span>
+            La proiezione applica i pesi <em>odierni</em> all&rsquo;intera storia e ne
+            ricampiona i rendimenti. Risponde quindi a che cosa avrebbe fatto in passato
+            il portafoglio appena ottimizzato, non a che cosa fara&rsquo; una strategia che
+            ribilancia: il confronto fra modelli, che ribilancia, e&rsquo; nella pagina di
+            confronto.</p>
+            <p><span class="text-slate-400">Che cosa e&rsquo; stato verificato, e che cosa no.</span>
+            La banda mostrata sopra e&rsquo; all&rsquo;orizzonte selezionato e non puo&rsquo; essere
+            validata: verificare una banda a orizzonte h richiede molti tratti non
+            sovrapposti lunghi h, e un decennio di dati giornalieri ne contiene uno solo
+            lungo un decennio. Quella che si puo&rsquo; validare, ed e&rsquo; validata qui sotto,
+            e&rsquo; la banda a un mese, prodotta dalle stesse tre procedure calibrate allo
+            stesso modo.</p>
+        </div>
+
+        {% set cov = mc_summary.get('coverage', {}) %}
+        {% if cov.get('available') %}
+        <div class="mt-4 rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 class="text-xs font-semibold uppercase tracking-widest text-slate-400">
+                    Verifica retrospettiva delle bande &mdash; orizzonte {{ cov.horizon_days }} giorni
+                </h3>
+                <p class="text-xs text-slate-600 font-mono">{{ cov.n_windows }} finestre indipendenti</p>
+            </div>
+            <p class="mt-2 text-xs text-slate-500">
+                Ogni banda e&rsquo; stata costruita usando solo i dati che la precedono, e
+                confrontata con cio&rsquo; che e&rsquo; poi accaduto nel mese successivo. Le
+                finestre non si sovrappongono, quindi i conteggi sono indipendenti.
+            </p>
+            <div class="mt-3 overflow-x-auto">
+                <table class="min-w-full text-xs">
+                    <thead class="text-slate-500 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-2 py-1.5 text-left">Procedura</th>
+                            <th class="px-2 py-1.5 text-right">Entro P5&ndash;P95</th>
+                            <th class="px-2 py-1.5 text-right">Sotto P5</th>
+                            <th class="px-2 py-1.5 text-right">Sopra P95</th>
+                            <th class="px-2 py-1.5 text-right">p forma</th>
+                            <th class="px-2 py-1.5 text-right">p coda inf.</th>
+                            <th class="px-2 py-1.5 text-right">p coda sup.</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800">
+                        {% for row in cov.rows %}
+                        <tr>
+                            <td class="px-2 py-1.5 text-slate-300">
+                                {{ {'gbm':'GBM','block_bootstrap':'Bootstrap a blocchi','jump_diffusion':'Jump-Diffusion'}.get(row.method, row.method) }}
+                            </td>
+                            <td class="px-2 py-1.5 text-right font-mono text-slate-200">
+                                {{ "%.1f%%"|format(row.share_inside * 100) }}
+                                <span class="text-slate-600">/ {{ "%.0f%%"|format(row.nominal_inside * 100) }}</span>
+                            </td>
+                            <td class="px-2 py-1.5 text-right font-mono {{ 'text-rose-400' if row.p_kupiec_below < 0.05 else 'text-slate-400' }}">{{ "%.1f%%"|format(row.share_below * 100) }}</td>
+                            <td class="px-2 py-1.5 text-right font-mono {{ 'text-rose-400' if row.p_kupiec_above < 0.05 else 'text-slate-400' }}">{{ "%.1f%%"|format(row.share_above * 100) }}</td>
+                            <td class="px-2 py-1.5 text-right font-mono {{ 'text-rose-400' if row.p_uniform < 0.05 else 'text-emerald-400' }}">{{ "%.3f"|format(row.p_uniform) }}</td>
+                            <td class="px-2 py-1.5 text-right font-mono {{ 'text-rose-400' if row.p_kupiec_below < 0.05 else 'text-slate-500' }}">{{ "%.3f"|format(row.p_kupiec_below) }}</td>
+                            <td class="px-2 py-1.5 text-right font-mono {{ 'text-rose-400' if row.p_kupiec_above < 0.05 else 'text-slate-500' }}">{{ "%.3f"|format(row.p_kupiec_above) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <div class="mt-3 space-y-1">
+                {% for row in cov.rows %}
+                <p class="text-xs {{ 'text-amber-300/80' if row.rejected else 'text-slate-500' }}">
+                    &middot; <span class="text-slate-400">{{ {'gbm':'GBM','block_bootstrap':'Bootstrap a blocchi','jump_diffusion':'Jump-Diffusion'}.get(row.method, row.method) }}:</span>
+                    {{ row.verdict }}
+                </p>
+                {% endfor %}
+            </div>
+            <p class="mt-3 text-xs text-slate-600">
+                &laquo;p forma&raquo; e&rsquo; il test di uniformita&rsquo; della trasformata integrale di
+                probabilita&rsquo; (Diebold, Gunther e Tay, 1998), che giudica l&rsquo;intera
+                distribuzione prevista e non un solo quantile; le due code sono verificate a
+                parte con il test di Kupiec, perche&rsquo; una banda puo&rsquo; coprire il novanta per
+                cento complessivo e sbagliare proprio dove il portafoglio viene giudicato. I
+                tre p-value sono valutati insieme, quindi la probabilita&rsquo; che almeno uno
+                scenda sotto 0,05 per solo effetto del caso e&rsquo; circa il 14 per cento e non
+                il 5. Con {{ cov.n_windows }} finestre il test rileva una banda stretta del
+                trenta per cento con certezza e una stretta del quindici circa una volta su due.
+            </p>
+        </div>
+        {% elif cov.get('reason') %}
+        <div class="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+            <p class="text-xs text-slate-400">Verifica retrospettiva delle bande non disponibile</p>
+            <p class="mt-1 text-xs text-slate-600">{{ cov.reason }}</p>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if charts.monte_carlo %}
+    <div class="mt-6 flex justify-center">
+        <div class="w-full max-w-[960px] rounded-3xl chart-card p-4">
+            {{ charts.monte_carlo | safe }}
+        </div>
+    </div>
+    {% else %}
+    <div class="mt-6 rounded-3xl border border-slate-800 bg-slate-900/60 p-8 text-center text-slate-400">
+        Simulazione Monte Carlo non disponibile.
+    </div>
+    {% endif %}
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     TAB 6 — BACKTEST
+     ════════════════════════════════════════════════════════════════════ -->
+<div id="panel-backtest" class="tab-panel mt-6 hidden">
+
+    <!-- Descrizione -->
+    <div class="mb-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+        <h3 class="text-sm font-semibold text-slate-200 mb-2">Come funziona il Walk-Forward Backtest</h3>
+        <p class="text-sm text-slate-400 leading-relaxed">
+            Il portafoglio viene riotttimizzato su finestre di training scorrevoli senza guardare al futuro
+            (<em>zero look-ahead bias</em>). Per ogni finestra: si stima il modello su
+            <strong class="text-white">{{ backtest_train }} giorni</strong> di storia,
+            poi si misura la performance sui successivi
+            <strong class="text-white">{{ backtest_test }} giorni</strong>.
+            I costi di transazione (<strong class="text-white">0.1% del turnover</strong>) vengono sottratti ad ogni ribilanciamento.
+        </p>
+        <p class="mt-2 text-sm text-slate-400 leading-relaxed">
+            La curva <span class="text-violet-300 font-medium">walk-forward</span> rappresenta la performance realistica
+            out-of-sample; la curva <span class="text-emerald-400 font-medium">in-sample</span> mostra il risultato
+            ottimizzato sull'intero periodo storico. Il gap tra le due misura l'overfitting del modello.
+        </p>
+    </div>
+
+    {% if run_backtest and charts.backtest %}
+
+    {% if bt_verdict %}
+    {% set vc = bt_verdict %}
+    {% set border_cls = {
+        'positive': 'border-emerald-700/60 bg-emerald-950/20',
+        'neutral':  'border-amber-700/50   bg-amber-950/20',
+        'warning':  'border-orange-700/50  bg-orange-950/20',
+        'negative': 'border-rose-700/50    bg-rose-950/20',
+    }[vc.verdict] %}
+    {% set label_cls = {
+        'positive': 'text-emerald-300',
+        'neutral':  'text-amber-300',
+        'warning':  'text-orange-300',
+        'negative': 'text-rose-300',
+    }[vc.verdict] %}
+    {% set icon = {
+        'positive': '✔',
+        'neutral':  '◎',
+        'warning':  '⚠',
+        'negative': '✘',
+    }[vc.verdict] %}
+    <div class="mb-6 rounded-2xl border {{ border_cls }} p-5">
+        <div class="flex items-start gap-3">
+            <span class="text-xl {{ label_cls }} flex-shrink-0 mt-0.5">{{ icon }}</span>
+            <div class="flex-1">
+                <div class="font-semibold {{ label_cls }}">{{ vc.label }}</div>
+                <p class="mt-1 text-sm text-slate-300 leading-relaxed">{{ vc.desc }}</p>
+                <div class="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-400 sm:grid-cols-4">
+                    <div>Rendimento WF <span class="font-mono {{ label_cls }}">{{ "%.1f"|format(vc.bt_cum * 100) }}%</span></div>
+                    <div>CAGR WF <span class="font-mono {{ label_cls }}">{{ "%.1f"|format(vc.bt_cagr * 100) }}%</span></div>
+                    <div>Sharpe WF <span class="font-mono {{ label_cls }}">{{ "%.2f"|format(vc.bt_sharpe) }}</span></div>
+                    <div>Max DD WF <span class="font-mono text-slate-300">{{ "%.1f"|format(vc.bt_max_dd * 100) }}%</span></div>
+                    <div>Rendimento IS <span class="font-mono text-slate-300">{{ "%.1f"|format(vc.is_cum * 100) }}%</span></div>
+                    <div>Gap IS − WF <span class="font-mono {% if vc.gap > 0.30 %}text-orange-400{% else %}text-slate-300{% endif %}">{{ "%.1f"|format(vc.gap * 100) }}%</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="flex justify-center">
+        <div class="w-full max-w-[880px] rounded-3xl chart-card p-4">
+            {{ charts.backtest | safe }}
+        </div>
+    </div>
+    {% elif run_backtest %}
+    <div class="rounded-3xl border border-slate-800 bg-slate-900/60 p-8 text-center text-slate-400">
+        Backtest completato ma nessun risultato (dati storici insufficienti per la finestra di training).
+    </div>
+    {% else %}
+    <div class="rounded-3xl border border-slate-800 bg-slate-900/60 p-10 text-center space-y-3">
+        <div class="text-slate-300 font-medium">Backtest non abilitato</div>
+        <p class="text-sm text-slate-500 max-w-md mx-auto">
+            Torna a <a href="{{ url_for('optimize.index') }}" class="text-amber-400 hover:underline">Nuova analisi</a>
+            e spunta <em>Walk-forward backtest</em> per validare la strategia out-of-sample con costi di transazione.
+        </p>
+    </div>
+    {% endif %}
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════
+     TAB 7 — STIMATORI
+     ════════════════════════════════════════════════════════════════════ -->
+<div id="panel-stimatori" class="tab-panel mt-6 hidden">
+
+    <!-- Etichette degli stimatori -->
+    <div class="mb-6 flex flex-wrap gap-4">
+        <div class="rounded-2xl border border-blue-700/50 bg-blue-950/30 px-5 py-4">
+            <div class="text-xs text-slate-400 uppercase tracking-wider">Stima rendimenti</div>
+            <div class="mt-1 text-base font-semibold text-blue-300">{{ returns_method_label }}</div>
+        </div>
+        <div class="rounded-2xl border border-emerald-700/50 bg-emerald-950/30 px-5 py-4">
+            <div class="text-xs text-slate-400 uppercase tracking-wider">Stima covarianza</div>
+            <div class="mt-1 text-base font-semibold text-emerald-300">{{ cov_method_label }}</div>
+        </div>
+    </div>
+
+    {% if returns_method_note %}
+    <div class="mb-6 rounded-2xl border border-amber-800/60 bg-amber-950/20 px-5 py-4">
+        <p class="text-xs uppercase tracking-wider text-amber-400">Stimatore richiesto non applicato integralmente</p>
+        <p class="mt-1 text-sm text-slate-300">
+            Hai chiesto <span class="text-slate-200">{{ returns_method_requested_label }}</span>.
+            {{ returns_method_note }}
+        </p>
+    </div>
+    {% endif %}
+
+    {# ── Stimatori di covarianza a confronto ───────────────────────────── #}
+    {% if cov_evidence and cov_evidence.rows %}
+    <div class="mb-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+        <h3 class="text-sm font-semibold text-slate-300">Stimatori di covarianza a confronto</h3>
+        <p class="mt-1 text-xs text-slate-500">
+            Volatilit&agrave; annua che ciascuno stimatore attribuisce all&rsquo;allocazione
+            effettivamente detenuta, e che cosa l&rsquo;indagine empirica ha misurato su di esso.
+            {% if cov_evidence.realized %}
+            La volatilit&agrave; realizzata dal portafoglio sul periodo &egrave;
+            <span class="font-mono text-slate-300">{{ "%.2f%%"|format(cov_evidence.realized * 100) }}</span>.
+            {% endif %}
+        </p>
+        <div class="mt-3 space-y-2">
+            {% for row in cov_evidence.rows %}
+            <div class="rounded-xl border {{ 'border-emerald-700/60 bg-emerald-950/20' if row.selected else 'border-slate-800 bg-slate-950/40' }} p-3">
+                <div class="flex flex-wrap items-baseline justify-between gap-2">
+                    <span class="text-sm font-medium {{ 'text-emerald-300' if row.selected else 'text-slate-300' }}">
+                        {{ row.label }}{% if row.selected %} <span class="text-xs text-slate-500">in uso</span>{% endif %}
+                    </span>
+                    <span class="font-mono text-sm {{ 'text-amber-300' if row.biased else 'text-slate-300' }}">
+                        {{ "%.2f%%"|format(row.volatility * 100) }}
+                    </span>
+                </div>
+                <p class="mt-1 text-xs {{ 'text-amber-300/80' if row.biased else 'text-slate-500' }}">{{ row.evidence }}</p>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Grafico di confronto dei rendimenti -->
+    {% if charts.returns_comparison %}
+    <div class="rounded-3xl chart-card p-4">
+        <h3 class="mb-3 text-sm font-semibold text-slate-300 px-2">
+            Confronto stime rendimenti attesi
+            <span class="ml-2 text-xs font-normal text-slate-500">(rendimenti aritmetici attesi, annualizzati, per ogni titolo)</span>
+        </h3>
+        {{ charts.returns_comparison | safe }}
+    </div>
+
+    <div class="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-400 leading-relaxed">
+        <p><span class="text-slate-200 font-medium">Media Storica</span> — media dei rendimenti logaritmici, annualizzata e portata su scala aritmetica. Alta varianza su finestre brevi.</p>
+        <p class="mt-1"><span class="text-blue-300 font-medium">Bayes-Stein</span> — shrinkage di Jorion (1986): spinge le medie storiche verso il rendimento del portafoglio a minima varianza. Riduce l'errore di stima.</p>
+        <p class="mt-1"><span class="text-emerald-300 font-medium">Fama-French</span> — modello a 3 fattori con dataset regionale (Nord America / Europa / Giappone / Asia Pacifico). Ove mancano i dati fattoriali, ripiega su Bayes-Stein per quel titolo; se mancano per tutti, la serie non compare affatto anzich&eacute; comparire duplicando quella di Bayes-Stein sotto un altro nome.</p>
+        {% if ff_fallback %}
+        <p class="mt-2 text-xs text-amber-300/80">
+            Per {{ ff_fallback | join(', ') }} i dati fattoriali non erano disponibili:
+            la barra &laquo;Fama-French&raquo; di quei titoli &egrave; la stima di Bayes-Stein,
+            non una coincidenza fra i due stimatori.
+        </p>
+        {% endif %}
+        <p class="mt-2 text-xs text-slate-500">Le tre serie sono sulla stessa scala, quella <em>aritmetica</em> su cui lavora l&rsquo;ottimizzatore: i livelli mostrati sono i livelli usati. Media Storica e Bayes-Stein stimano rendimenti logaritmici e vi &egrave; sommata la correzione di It&ocirc; (met&agrave; della varianza del titolo); Fama-French regredisce rendimenti semplici su premi al fattore semplici ed &egrave; gi&agrave; aritmetico, quindi non la riceve. Sommarla anche a quello contava la varianza due volte.</p>
+    </div>
+    {% else %}
+    <div class="rounded-3xl border border-slate-800 bg-slate-900/60 p-8 text-center text-slate-400">
+        Confronto stime non disponibile.
+    </div>
+    {% endif %}
+</div>
+
+
+<!-- ── JS per il cambio tab ─────────────────────────────────────────── -->
+<script>
+(function () {
+    function relayoutVisible(root) {
+        if (typeof Plotly === 'undefined') return;
+        (root || document).querySelectorAll('.plotly-graph-div').forEach(function (div) {
+            if (div.offsetParent !== null) {
+                Plotly.relayout(div, {autosize: true});
+            }
+        });
+    }
+
+    function switchTab(id) {
+        document.querySelectorAll('.tab-panel').forEach(el => el.classList.add('hidden'));
+        document.querySelectorAll('.tab-btn').forEach(el => {
+            el.classList.remove('border', 'border-amber-700', 'bg-amber-950/50');
+            el.classList.add('text-slate-400');
+            el.classList.remove('!text-amber-300');
+        });
+        const panel = document.getElementById('panel-' + id);
+        panel.classList.remove('hidden');
+        const btn = document.getElementById('btn-' + id);
+        btn.classList.add('border', 'border-amber-700', 'bg-amber-950/50', '!text-amber-300');
+        btn.classList.remove('text-slate-400');
+        // Trigger relayout for charts just revealed
+        requestAnimationFrame(function () { relayoutVisible(panel); });
+    }
+    window.switchTab = switchTab;
+
+    // Reflow all visible charts on browser zoom / window resize
+    var _resizeTimer;
+    window.addEventListener('resize', function () {
+        clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(function () { relayoutVisible(); }, 120);
+    });
+})();
+</script>
+
+<!-- ── JS degli slider ───────────────────────────────────────────────── -->
+<script>
+(function () {
+    const DATA = {{ slider_data | safe }};
+    const { assets, mu_hist, cov, rf } = DATA;
+    const rawW = {};
+    assets.forEach(a => { rawW[a] = DATA.weights[a]; });
+    let userMoved = false;
+
+    function normalise(raw) {
+        const total = Object.values(raw).reduce((s, v) => s + v, 0);
+        if (total <= 0) return Object.fromEntries(assets.map(a => [a, 1 / assets.length]));
+        return Object.fromEntries(assets.map(a => [a, raw[a] / total]));
+    }
+
+    function computeStats(w) {
+        let portVar = 0;
+        assets.forEach(a => { assets.forEach(b => { portVar += w[a] * w[b] * cov[a][b]; }); });
+        const vol = Math.sqrt(Math.max(portVar, 0));
+        let diagVar = 0;
+        assets.forEach(a => { diagVar += w[a] * cov[a][a]; });
+        // CAGR ≈ exp(Σ w_i·μ_hist_i + ½·(Σ w_i·σ_i² − σ_p²)) − 1
+        // 2nd-order Taylor of log(1 + Σ w_i·(exp(r_i)−1)); matches riepilogo within ~5 bps.
+        let logRet = 0;
+        assets.forEach(a => { logRet += w[a] * mu_hist[a]; });
+        const ret = Math.exp(logRet + 0.5 * (diagVar - portVar)) - 1;
+        const sharpe = vol > 1e-8 ? (ret - rf) / vol : 0;
+        return { ret, vol, sharpe };
+    }
+
+    function fmt(v, pct = true) { return pct ? (v * 100).toFixed(2) + '%' : v.toFixed(3); }
+
+    function updateDisplay() {
+        const w = normalise(rawW);
+        // At initial weights use exact optimizer metrics; switch to formula once user moves a slider.
+        const s = userMoved ? computeStats(w) : DATA.initial_metrics;
+        document.getElementById('live-ret').textContent    = fmt(s.ret);
+        document.getElementById('live-vol').textContent    = fmt(s.vol);
+        document.getElementById('live-sharpe').textContent = fmt(s.sharpe, false);
+        assets.forEach(a => {
+            const lbl = document.getElementById('lbl-' + a);
+            if (lbl) lbl.textContent = fmt(w[a]);
+        });
+    }
+
+    const container = document.getElementById('slider-container');
+    assets.forEach(a => {
+        const div = document.createElement('div');
+        div.className = 'space-y-1';
+        div.innerHTML = `
+            <div class="flex justify-between text-sm">
+                <span class="font-mono font-semibold text-amber-300">${a}</span>
+                <span id="lbl-${a}" class="font-mono text-slate-300 text-xs">${fmt(DATA.weights[a])}</span>
+            </div>
+            <input type="range" id="slider-${a}" min="0" max="100" step="1"
+                   value="${Math.round(DATA.weights[a] * 100)}"
+                   class="w-full accent-amber-400 cursor-pointer h-1.5">
+        `;
+        container.appendChild(div);
+        div.querySelector('input').addEventListener('input', function () {
+            userMoved = true;
+            rawW[a] = parseFloat(this.value) / 100;
+            updateDisplay();
+        });
+    });
+
+    updateDisplay();
+})();
+</script>
+
+{% endblock %}

@@ -1,0 +1,17 @@
+# Dipendenze di esecuzione. Elenco unico del progetto: portfolio_optimizer/
+# requirements.txt rimanda a questo file. Le due copie sono rimaste
+# disallineate per mesi, una senza gunicorn e l'altra senza pytest.
+# Per test e verifiche: requirements-dev.txt
+yfinance>=0.2.54
+pandas-datareader>=0.10
+pandas>=2.0
+numpy>=1.26
+scipy>=1.12
+cvxpy>=1.4
+matplotlib>=3.8
+plotly>=5.20
+Flask>=3.0
+flask-limiter>=3.7
+scikit-learn>=1.4
+statsmodels>=0.14
+gunicorn>=21.0

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="it">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Portfolio Terminal{% endblock %}</title>
+
+    <!-- Plus Jakarta Sans (interfaccia) + IBM Plex Mono (dati) + Cormorant (titoli) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant:ital,wght@0,400;0,500;0,600;1,400;1,600&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                fontFamily: {
+                    mono:    ['"IBM Plex Mono"', 'Consolas', 'ui-monospace', 'monospace'],
+                    sans:    ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+                    display: ['Cormorant', 'Georgia', 'ui-serif', 'serif'],
+                },
+            }
+        }
+    };
+    </script>
+
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+
+    <div class="accent-line"></div>
+
+    <header id="site-header">
+        <a href="{{ url_for('optimize.index') }}" class="header-wordmark">
+            PORTFOLIO TERMINAL
+        </a>
+
+        <div id="header-tape-wrap">
+            <div id="ticker-tape-inner"></div>
+        </div>
+
+        <div class="header-meta">
+            <span id="live-date" class="header-date"></span>
+            <span id="live-clock" class="header-clock">--:--:--</span>
+        </div>
+    </header>
+
+    <main class="mx-auto max-w-7xl px-6 py-10">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+    (function () {
+        var days   = ['Dom','Lun','Mar','Mer','Gio','Ven','Sab'];
+        var months = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
+        function pad(n) { return String(n).padStart(2, '0'); }
+        function tick() {
+            var d = new Date();
+            document.getElementById('live-clock').textContent =
+                pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+            document.getElementById('live-date').textContent =
+                days[d.getDay()] + ' ' + pad(d.getDate()) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+        }
+        tick();
+        setInterval(tick, 1000);
+    })();
+    </script>
+    <script src="{{ url_for('static', filename='js/ticker-tape.js') }}"></script>
+</body>
+</html>

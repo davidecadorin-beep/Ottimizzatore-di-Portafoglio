@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}News & Eventi — Portfolio Terminal{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Intestazione pagina -->
+  <div>
+    <p class="text-sm uppercase tracking-[0.35em] text-amber-400">Portafoglio</p>
+    <h1 class="mt-2 text-4xl font-semibold">News &amp; Eventi</h1>
+    <p class="mt-2 text-sm text-slate-400 font-mono">
+      {% for t in tickers %}
+        <span style="color: {{ colour_map.get(t, '#94a3b8') }}">{{ t }}</span>{% if not loop.last %} &nbsp;·&nbsp; {% endif %}
+      {% endfor %}
+    </p>
+    {% if troncati %}
+    <p class="mt-3 rounded-xl border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+      La richiesta conteneva pi&ugrave; di {{ max_tickers }} titoli: sono mostrate le notizie
+      dei primi {{ max_tickers }}. Ogni titolo comporta una chiamata al fornitore dei dati,
+      e senza un tetto una sola richiesta potrebbe occupare il server per tutti.
+    </p>
+    {% endif %}
+    {% if titoli_senza_notizie %}
+    <p class="mt-3 rounded-xl border border-slate-700/60 bg-slate-900/30 px-3 py-2 text-xs text-slate-400">
+      Nessuna notizia disponibile per: {{ titoli_senza_notizie | join(', ') }}.
+    </p>
+    {% endif %}
+  </div>
+
+  <!-- Layout a due colonne -->
+  <div class="flex flex-col lg:flex-row gap-6">
+
+    <!-- Feed delle notizie (75%) -->
+    <div class="lg:w-3/4 min-w-0 space-y-3">
+      <h2 class="text-xs font-mono uppercase tracking-widest text-slate-500">
+        Ultime notizie &mdash; {{ news | length }} articoli
+      </h2>
+
+      {% if not news %}
+        <p class="text-slate-500 text-sm font-mono py-8 text-center">Nessuna notizia disponibile</p>
+      {% endif %}
+
+      {% for item in news %}
+      <a href="{{ item.link }}" target="_blank" rel="noopener noreferrer"
+         class="group block rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3
+                hover:border-slate-600 hover:bg-slate-800/60 transition-colors">
+        <div class="flex items-start gap-3">
+          <!-- Etichetta del ticker -->
+          <span class="mt-0.5 flex-shrink-0 rounded-md px-2 py-0.5 text-xs font-mono font-semibold"
+                style="background: {{ colour_map.get(item.ticker, '#94a3b8') }}22; color: {{ colour_map.get(item.ticker, '#94a3b8') }}; border: 1px solid {{ colour_map.get(item.ticker, '#94a3b8') }}44">
+            {{ item.ticker }}
+          </span>
+          <!-- Contenuto -->
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium text-slate-200 group-hover:text-white leading-snug line-clamp-2">
+              {{ item.title }}
+            </p>
+            <p class="mt-1 text-xs text-slate-500 font-mono">
+              {{ item.publisher }} &nbsp;·&nbsp; {{ item.age }}
+            </p>
+          </div>
+          <!-- Freccia -->
+          <span class="flex-shrink-0 text-slate-600 group-hover:text-slate-400 transition-colors text-sm mt-0.5">↗</span>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+
+    <!-- Barra laterale degli eventi (25%) -->
+    <div class="lg:w-1/4 flex-shrink-0 space-y-3">
+      <h2 class="text-xs font-mono uppercase tracking-widest text-slate-500">
+        Prossimi eventi
+      </h2>
+
+      {% if not events %}
+        <p class="text-slate-500 text-sm font-mono py-4">Nessun evento in programma</p>
+      {% else %}
+        <div class="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+          <table class="w-full text-xs font-mono">
+            <thead>
+              <tr class="border-b border-slate-800">
+                <th class="px-3 py-2 text-left text-slate-500 font-medium">Ticker</th>
+                <th class="px-3 py-2 text-left text-slate-500 font-medium">Tipo</th>
+                <th class="px-3 py-2 text-left text-slate-500 font-medium">Data</th>
+                <th class="px-3 py-2 text-left text-slate-500 font-medium">Valore</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for ev in events %}
+              <tr class="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                <td class="px-3 py-2">
+                  <span class="rounded-md px-2 py-0.5 text-xs font-mono font-semibold"
+                        style="background: {{ colour_map.get(ev.ticker, '#94a3b8') }}22; color: {{ colour_map.get(ev.ticker, '#94a3b8') }}; border: 1px solid {{ colour_map.get(ev.ticker, '#94a3b8') }}44">
+                    {{ ev.ticker }}
+                  </span>
+                </td>
+                <td class="px-3 py-2 text-slate-300">
+                  {% if ev.type == 'earnings' %}earnings
+                  {% elif ev.type == 'ex_dividend' %}ex-div
+                  {% else %}dividend{% endif %}
+                </td>
+                <td class="px-3 py-2 text-slate-300">
+                  {{ ev.date | _format_event_date }}
+                </td>
+                <td class="px-3 py-2 text-slate-400 font-mono">
+                  {% if ev.value is not none %}{{ "%.2f"|format(ev.value) }}{% else %}—{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+{% endblock %}

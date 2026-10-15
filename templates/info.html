@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Mercati — Cambi e Cripto — Portfolio Terminal{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+
+  <!-- Intestazione -->
+  <div class="flex items-end justify-between">
+    <div>
+      <h1 class="text-4xl text-slate-100">Mercati — Cambi e Cripto</h1>
+      <p class="text-slate-400 text-sm mt-1 font-mono">
+        Variazione sull&rsquo;ultima chiusura giornaliera &mdash;
+        <span id="info-last-updated">—</span>
+      </p>
+    </div>
+    <div class="text-right">
+      <span class="text-xs font-mono text-slate-500">prossimo aggiornamento</span><br>
+      <span id="info-countdown" class="text-lg font-mono text-blue-400">60</span>
+      <span class="text-xs font-mono text-slate-500">s</span>
+    </div>
+  </div>
+
+  <!-- Banner dati non aggiornati (nascosto di default, mostrato via JS) -->
+  <div id="info-stale-banner"
+       class="hidden rounded-xl border border-amber-800/60 bg-amber-950/30 px-4 py-3 text-sm text-amber-300 font-mono">
+    Dati non aggiornati — ultima lettura riuscita: <span id="info-stale-age"></span> fa.
+  </div>
+
+  <!-- Griglia dei cambi FX -->
+  <div id="fx-grid" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="col-span-2 md:col-span-4 text-center text-slate-500 font-mono text-sm py-8">
+      Caricamento dati...
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  var countdown = 60;
+  var countdownEl = document.getElementById('info-countdown');
+  var lastUpdatedEl = document.getElementById('info-last-updated');
+  var gridEl = document.getElementById('fx-grid');
+  var staleBanner = document.getElementById('info-stale-banner');
+  var staleAgeEl = document.getElementById('info-stale-age');
+
+  function formatRate(rate, symbol) {
+    if (symbol === 'BTC/USD' || symbol === 'ETH/USD') {
+      return rate.toLocaleString('it-IT', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+    return rate.toFixed(4);
+  }
+
+  function formatAge(seconds) {
+    if (!seconds) return 'sconosciuto';
+    if (seconds < 60) return seconds + 's';
+    if (seconds < 3600) return Math.round(seconds / 60) + ' min';
+    return Math.round(seconds / 3600) + ' h';
+  }
+
+  function sparklineSVG(history, direction) {
+    if (!history || history.length < 2) return '';
+    var min = Math.min.apply(null, history);
+    var max = Math.max.apply(null, history);
+    var range = max - min || 1;
+    var w = 80, h = 28, pad = 2;
+    var step = (w - pad * 2) / (history.length - 1);
+    var pts = history.map(function(v, i) {
+      var x = pad + i * step;
+      var y = h - pad - ((v - min) / range) * (h - pad * 2);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    var color = direction === 'up' ? '#10b981' : (direction === 'down' ? '#ef4444' : '#64748b');
+    return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '</svg>';
+  }
+
+  function renderCard(item) {
+    var changeSign = item.change_pct > 0 ? '+' : '';
+    var changeColor = item.direction === 'up' ? 'text-emerald-400' :
+                      (item.direction === 'down' ? 'text-red-400' : 'text-slate-400');
+    var arrowIcon = item.direction === 'up' ? '▲' : (item.direction === 'down' ? '▼' : '—');
+    var staleBadge = item.stale
+      ? '<span class="text-xs font-mono text-amber-400 ml-1" title="Dato non aggiornato">&#x26A0;</span>'
+      : '';
+    return '<div class="rounded-2xl border border-slate-700 bg-slate-800/60 backdrop-blur-sm p-4 flex flex-col gap-2">' +
+      '<div class="flex items-center justify-between">' +
+        '<span class="text-xs font-mono text-slate-400 tracking-widest uppercase">' + item.symbol + staleBadge + '</span>' +
+        '<span class="text-xs font-mono ' + changeColor + '">' + arrowIcon + ' ' + changeSign + item.change_pct.toFixed(3) + '%</span>' +
+      '</div>' +
+      '<div class="text-2xl font-mono text-slate-100">' + formatRate(item.rate, item.symbol) + '</div>' +
+      '<div>' + sparklineSVG(item.history_5d, item.direction) + '</div>' +
+    '</div>';
+  }
+
+  function refreshInfo() {
+    fetch('/api/fx')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data || !data.length) return;
+        gridEl.innerHTML = data.map(renderCard).join('');
+
+        var anyStale = data.some(function(d) { return d.stale; });
+        if (anyStale) {
+          var ageSeconds = data[0].age_seconds;
+          staleBanner.classList.remove('hidden');
+          staleAgeEl.textContent = formatAge(ageSeconds);
+          lastUpdatedEl.textContent = 'non aggiornato (' + formatAge(ageSeconds) + ' fa)';
+        } else {
+          staleBanner.classList.add('hidden');
+          var now = new Date();
+          lastUpdatedEl.textContent = now.toLocaleTimeString('it-IT');
+        }
+        countdown = 60;
+      })
+      .catch(function() {});
+  }
+
+  setInterval(function() {
+    countdown = Math.max(0, countdown - 1);
+    if (countdownEl) countdownEl.textContent = countdown;
+  }, 1000);
+
+  setInterval(refreshInfo, 60000);
+  refreshInfo();
+})();
+</script>
+{% endblock %}
